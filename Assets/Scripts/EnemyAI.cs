@@ -24,19 +24,45 @@ public class EnemyAI : MonoBehaviour {
     // Internal 
     private int currentPatrolIndex = 0;
     private float idleTimer = 0f;
-    void Start() {
+    
+    void Awake() {
         agent = GetComponent<NavMeshAgent>();
     }
 
+    private void OnEnable()
+    {
+        currentState = EnemyState.Patrol;
+        idleTimer = 0f;
+
+        if (Player == null)
+        {
+            GameObject playerObject = GameObject.FindGameObjectWithTag("Player");
+            if (playerObject != null)
+            {
+                Player = playerObject.transform;
+            }
+        }
+
+        if (agent != null && agent.isOnNavMesh)
+        {
+            agent.ResetPath();
+        }
+    }
+
     void Update() {
+        if (Player == null)
+        {
+            return;
+        }
+
         float distanceToPlayer = Vector3.Distance(transform.position, Player.position);
 
         if (distanceToPlayer <= attackRange) {
             currentState = EnemyState.Attack;
-        } else if (distanceToPlayer <= detectionRadius) {
+        } 
+        else if (distanceToPlayer <= detectionRadius) {
             currentState = EnemyState.Attack;
         }
-
 
         switch (currentState) {
             case EnemyState.Idle:
@@ -60,10 +86,16 @@ public class EnemyAI : MonoBehaviour {
     }
 
     void Patrol() {
-        if (patrolPoints.Length == 0)
+        if (patrolPoints == null || patrolPoints.Length == 0)
+        {
+            currentState = EnemyState.Idle;
             return;
+        }
 
-        agent.SetDestination(patrolPoints[currentPatrolIndex].position);
+        if (agent.isOnNavMesh)
+        {
+            agent.SetDestination(patrolPoints[currentPatrolIndex].position);
+        }
 
         if (Vector3.Distance(transform.position, patrolPoints[currentPatrolIndex].position) < 0.5f) {
             currentPatrolIndex = (currentPatrolIndex + 1) % patrolPoints.Length;
@@ -73,8 +105,11 @@ public class EnemyAI : MonoBehaviour {
     }
 
     void Attack() {
-        agent.SetDestination(Player.position);
-
+        if (agent.isOnNavMesh)
+        {
+            agent.SetDestination(Player.position);
+        }
+            
         if (Vector3.Distance(transform.position, Player.position) > detectionRadius) {
             currentState = EnemyState.Patrol;
         }
