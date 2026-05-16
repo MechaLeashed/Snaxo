@@ -56,5 +56,5 @@
         "temp/": true,
         "Temp/": true
     },
-    "dotnet.defaultSolution": "Snaxo.slnx"
+    "dotnet.defaultSolution": "Snacxo.slnx"
 }

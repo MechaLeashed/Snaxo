@@ -30,7 +30,7 @@ public class HealthBar : MonoBehaviour
 
         if (Mouse.current.leftButton.wasPressedThisFrame)
         {
-            takeDamage(10);
+            takeDamage(0);
         }
 
     }
