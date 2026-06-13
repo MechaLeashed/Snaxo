@@ -1,44 +1,36 @@
 using UnityEngine;
 using UnityEngine.UI;
 using System.Collections.Generic;
-
-[System.Serializable]
-public class ChopSlot
-{
-    [Header("Physical Setup")]
-    public Transform anchor;
-    public GameObject uiPanel;
-    public Slider progressSlider;
-    public Image foodIcon;
-
-    [HideInInspector] public IngredientData currentItem;
-    [HideInInspector] public GameObject visualObject;
-    [HideInInspector] public float timer;
-    [HideInInspector] public bool isBusy => currentItem != null;
-    [HideInInspector] public bool isDone;
-    [HideInInspector] public PlayerController lastWorker; // Tracks who placed the food
-}
+using UnityEngine.InputSystem;
 
 public class CuttingBoard : MonoBehaviour, IInteractable
 {
-    [Header("Chopping Configuration")]
-    public List<ChopSlot> slots = new List<ChopSlot>();
+    [Header("Global UI")]
+    public GameObject entireUiBackground;
+    public Slider progressSlider; 
+    public Image activeFoodIcon;  
+
+    [Header("Queue Setup")]
+    [Tooltip("Assign 3 Transforms here in order (Slot 0 = Front/Chopping, Slot 1 = Middle, Slot 2 = Back)")]
+    public List<Transform> queueAnchors = new List<Transform>();
 
     [Header("Settings")]
     [Range(0.1f, 5f)] public float globalChopSpeedMultiplier = 1.0f;
 
+    // Internal data structures to track our queue
+    private List<IngredientData> itemQueue = new List<IngredientData>();
+    private List<GameObject> visualQueue = new List<GameObject>();
+    
+    private float chopTimer = 0f;
+    private bool isPlayerZoneActive = false; // Tracks if a player is standing in front of the board
+
     private void Start()
     {
-        // Hide all UI panels on start
-        foreach (var slot in slots)
-        {
-            if (slot.uiPanel != null) slot.uiPanel.SetActive(false);
-        }
+        if (entireUiBackground != null) entireUiBackground.SetActive(false);
     }
 
     public void Interact(PlayerController player)
     {
-        // Logic: If holding food -> Place it. If hands empty -> Try pick up manually.
         if (player.IsHoldingItem())
         {
             TryPlaceFood(player);
@@ -51,114 +43,149 @@ public class CuttingBoard : MonoBehaviour, IInteractable
 
     private void TryPlaceFood(PlayerController player)
     {
-        IngredientData item = player.GetHeldItem();
+        if (itemQueue.Count >= 3) return;
 
-        // Safety: Only proceed if item is choppable
+        IngredientData item = player.GetHeldItem();
         if (item == null || item.processedResult == null) return;
 
-        foreach (var slot in slots)
+        itemQueue.Add(item);
+        
+        GameObject foodVisual = player.GetCurrentObject();
+        visualQueue.Add(foodVisual);
+
+        int currentSlotIndex = itemQueue.Count - 1;
+        UpdateObjectPlacement(foodVisual, currentSlotIndex);
+
+        player.ClearHand();
+
+        if (itemQueue.Count == 1)
         {
-            if (!slot.isBusy)
-            {
-                slot.lastWorker = player; // Link player to this slot
-                slot.currentItem = item;
-                slot.visualObject = player.GetCurrentObject();
-
-                slot.visualObject.transform.SetParent(slot.anchor);
-                slot.visualObject.transform.localPosition = Vector3.zero;
-                slot.visualObject.transform.localRotation = Quaternion.identity;
-
-                player.ClearHand();
-
-                slot.timer = 0;
-                slot.isDone = false;
-                slot.uiPanel.SetActive(true);
-
-                if (slot.foodIcon != null) slot.foodIcon.sprite = item.icon;
-                if (slot.progressSlider != null)
-                {
-                    slot.progressSlider.minValue = 0;
-                    slot.progressSlider.maxValue = item.cookTime;
-                    slot.progressSlider.value = 0;
-                }
-                return;
-            }
+            ResetActiveProgressUI();
         }
+
+        UpdateUiVisibility();
     }
 
     private void TryPickUpFood(PlayerController player)
     {
-        // Manual pickup if the auto-pickup failed (e.g. player's hands were full when it finished)
-        foreach (var slot in slots)
+        if (itemQueue.Count > 0 && chopTimer >= itemQueue[0].cookTime)
         {
-            if (slot.isBusy && slot.isDone)
-            {
-                player.PickUpItem(slot.visualObject, slot.currentItem);
+            IngredientData finishedData = itemQueue[0].processedResult;
+            
+            Destroy(visualQueue[0]);
 
-                slot.uiPanel.SetActive(false);
-                slot.currentItem = null;
-                slot.visualObject = null;
-                slot.isDone = false;
-                slot.lastWorker = null;
-                return;
+            GameObject finishedFood = Instantiate(finishedData.prefab);
+            player.PickUpItem(finishedFood, finishedData);
+
+            itemQueue.RemoveAt(0);
+            visualQueue.RemoveAt(0);
+
+            ShiftQueueForward();
+
+            chopTimer = 0f;
+            if (itemQueue.Count > 0)
+            {
+                ResetActiveProgressUI();
             }
+
+            UpdateUiVisibility();
         }
     }
 
     private void Update()
     {
-        foreach (var slot in slots)
+        // Only allow chopping if there are items, it's not done, AND the player is standing here
+        if (itemQueue.Count > 0 && chopTimer < itemQueue[0].cookTime && isPlayerZoneActive)
         {
-            if (slot.isBusy && !slot.isDone)
+            if (Keyboard.current != null && Keyboard.current.eKey.isPressed)
             {
-                slot.timer += Time.deltaTime * globalChopSpeedMultiplier;
-
-                if (slot.progressSlider != null)
-                {
-                    slot.progressSlider.value = slot.timer;
-                }
-
-                if (slot.timer >= slot.currentItem.cookTime)
-                {
-                    FinishSlot(slot);
-                }
+                ProcessChopping();
             }
         }
     }
 
-    private void FinishSlot(ChopSlot slot)
+    private void ProcessChopping()
     {
-        slot.isDone = true;
-        IngredientData choppedData = slot.currentItem.processedResult;
+        IngredientData activeItem = itemQueue[0];
+        chopTimer += Time.deltaTime * globalChopSpeedMultiplier;
 
-        // 1. Remove the raw model
-        Destroy(slot.visualObject);
-
-        // 2. Create the chopped model
-        GameObject finishedFood = Instantiate(choppedData.prefab);
-
-        // 3. Try Auto-Pickup
-        if (slot.lastWorker != null && !slot.lastWorker.IsHoldingItem())
+        if (progressSlider != null)
         {
-            slot.lastWorker.PickUpItem(finishedFood, choppedData);
-
-            // Clean up slot immediately
-            slot.uiPanel.SetActive(false);
-            slot.currentItem = null;
-            slot.visualObject = null;
-            slot.lastWorker = null;
-            slot.isDone = false;
+            progressSlider.value = chopTimer;
         }
-        else
-        {
-            // If player hands are full, leave it on the board for manual pickup
-            finishedFood.transform.SetParent(slot.anchor);
-            finishedFood.transform.localPosition = Vector3.zero;
-            finishedFood.transform.localRotation = Quaternion.identity;
 
-            slot.visualObject = finishedFood;
-            slot.currentItem = choppedData;
-            // Keep uiPanel active but maybe change color to show it's done
+        if (chopTimer >= activeItem.cookTime)
+        {
+            chopTimer = activeItem.cookTime;
+            
+            Destroy(visualQueue[0]);
+            GameObject choppedVisual = Instantiate(activeItem.processedResult.prefab);
+            visualQueue[0] = choppedVisual;
+            UpdateObjectPlacement(choppedVisual, 0);
+
+            if (progressSlider != null) progressSlider.gameObject.SetActive(false);
+        }
+    }
+
+    // --- PROXIMITY DETECTION ---
+    private void OnTriggerEnter(Collider other)
+    {
+        // Check if the object entering the zone is the Player
+        if (other.GetComponent<PlayerController>() != null)
+        {
+            isPlayerZoneActive = true;
+        }
+    }
+
+    private void OnTriggerExit(Collider other)
+    {
+        // Check if the object leaving the zone is the Player
+        if (other.GetComponent<PlayerController>() != null)
+        {
+            isPlayerZoneActive = false;
+        }
+    }
+    // ----------------------------
+
+    private void ShiftQueueForward()
+    {
+        for (int i = 0; i < visualQueue.Count; i++)
+        {
+            UpdateObjectPlacement(visualQueue[i], i);
+        }
+    }
+
+    private void UpdateObjectPlacement(GameObject obj, int slotIndex)
+    {
+        if (slotIndex < queueAnchors.Count && queueAnchors[slotIndex] != null)
+        {
+            obj.transform.SetParent(queueAnchors[slotIndex]);
+            obj.transform.localPosition = Vector3.zero;
+            obj.transform.localRotation = Quaternion.identity;
+        }
+    }
+
+    private void ResetActiveProgressUI()
+    {
+        chopTimer = 0f;
+        if (itemQueue.Count > 0)
+        {
+            if (activeFoodIcon != null) activeFoodIcon.sprite = itemQueue[0].icon;
+            if (progressSlider != null)
+            {
+                progressSlider.gameObject.SetActive(true);
+                progressSlider.minValue = 0;
+                progressSlider.maxValue = itemQueue[0].cookTime;
+                progressSlider.value = 0;
+            }
+        }
+    }
+
+    private void UpdateUiVisibility()
+    {
+        if (entireUiBackground != null)
+        {
+            entireUiBackground.SetActive(itemQueue.Count > 0);
         }
     }
 }
